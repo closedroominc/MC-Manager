@@ -2,6 +2,11 @@ import React, { createContext, useState, useEffect, useContext } from 'react';
 
 const AuthContext = createContext(null);
 
+// Single sign-out: end this app's Autentico session, then go back to the portal.
+// Set VITE_AUTENTICO_APP_ID and VITE_PORTAL_URL when building the client.
+const FORWARD_AUTH_APP_ID = import.meta.env.VITE_AUTENTICO_APP_ID || '';
+const PORTAL_URL = import.meta.env.VITE_PORTAL_URL || '/';
+
 export const AuthProvider = ({ children }) => {
     const [user, setUser] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -26,27 +31,18 @@ export const AuthProvider = ({ children }) => {
         }
     };
 
-    const login = async (password) => {
-        const res = await fetch('/api/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password })
-        });
-        if (res.ok) {
-            const data = await res.json();
-            setUser({ role: data.role });
-            return true;
-        }
-        return false;
-    };
-
     const logout = async () => {
-        await fetch('/api/logout', { method: 'POST' });
+        try {
+            if (FORWARD_AUTH_APP_ID) await fetch(`/_autentico/${FORWARD_AUTH_APP_ID}/logout`, { method: 'POST' });
+        } catch {
+            // the redirect below still leaves this page
+        }
         setUser(null);
+        window.location.assign(PORTAL_URL);
     };
 
     return (
-        <AuthContext.Provider value={{ user, login, logout, loading }}>
+        <AuthContext.Provider value={{ user, logout, loading }}>
             {!loading && children}
         </AuthContext.Provider>
     );

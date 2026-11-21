@@ -28,10 +28,10 @@ const NAV = [
         group: 'Play',
         items: [
             { path: '/', icon: Terminal, label: 'Console', roles: ['admin'] },
-            { path: '/controls', icon: Power, label: 'Controls', roles: ['user'] },
+            { path: '/controls', icon: Power, label: 'Controls', roles: ['operator'] },
             { path: '/chat', icon: MessageSquare, label: 'Comms', roles: ['admin'] },
             { path: '/players', icon: Users, label: 'Personnel', roles: ['admin'] },
-            { path: '/map', icon: MapIcon, label: 'Surveillance', roles: ['admin', 'user'] },
+            { path: '/map', icon: MapIcon, label: 'Surveillance', roles: ['admin', 'operator', 'viewer'] },
         ],
     },
     {
@@ -49,7 +49,7 @@ const NAV = [
         items: [
             { path: '/stats', icon: Activity, label: 'System', roles: ['admin'] },
             { path: '/settings', icon: SettingsIcon, label: 'Config', roles: ['admin'] },
-            { path: '/ping', icon: Wifi, label: 'Ping', roles: ['admin', 'user'] },
+            { path: '/ping', icon: Wifi, label: 'Ping', roles: ['admin', 'operator', 'viewer'] },
         ],
     },
 ];
@@ -113,9 +113,7 @@ const Dashboard = () => {
             `}>
                 <div className="p-5 border-b border-slate-800 hidden md:block">
                     <div className="flex items-center gap-3">
-                        <div className="p-2 bg-cyan-500/10 rounded-lg">
-                            <Server className="w-5 h-5 text-cyan-400" />
-                        </div>
+                        <img src="/closedroom-mark.svg" alt="Closed Room" className="w-9 h-9 rounded-lg" />
                         <div>
                             <h1 className="font-bold text-white tracking-tight text-sm">CLOSED ROOM</h1>
                             <p className="text-[10px] text-slate-500 tracking-widest">INC. MANAGER</p>

@@ -21,8 +21,11 @@ if (!sandbox) {
 const scenarios = new Set(scenarioArgs.length ? scenarioArgs : ['run']);
 const PORT = 3999;
 const BASE = `http://127.0.0.1:${PORT}`;
-const ADMIN = 'e2e-admin';
-let cookie = '';
+const proxyKey = 'e2e-proxy-key';
+const identity = (role) => ({
+    'x-de-proxy-key': proxyKey,
+    'x-auth-user': 'e2e-' + role,
+});
 
 const log = (...args) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...args);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -30,11 +33,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const api = async (method, url, body) => {
     const res = await fetch(BASE + url, {
         method,
-        headers: { cookie, ...(body ? { 'content-type': 'application/json' } : {}) },
+        headers: { ...identity('admin'), ...(body ? { 'content-type': 'application/json' } : {}) },
         body: body ? JSON.stringify(body) : undefined,
     });
-    const setCookie = res.headers.get('set-cookie');
-    if (setCookie) cookie = setCookie.split(';')[0];
     const data = (res.headers.get('content-type') || '').includes('json') ? await res.json() : await res.text();
     if (!res.ok) throw new Error(`${method} ${url} -> ${res.status} ${JSON.stringify(data)}`);
     return data;
@@ -57,7 +58,7 @@ const waitForJob = async (job, timeoutMs = 15 * 60 * 1000) => {
 };
 
 const connectSocket = () => new Promise((resolve, reject) => {
-    const socket = io(BASE, { extraHeaders: { cookie } });
+    const socket = io(BASE, { extraHeaders: identity('admin') });
     socket.once('connect', () => {
         socket.emit('console_subscribe');
         resolve(socket);
@@ -115,10 +116,10 @@ const main = async () => {
         env: {
             ...process.env,
             PORT: String(PORT),
-            HOST: '127.0.0.1',
-            ADMIN_PASSWORD: ADMIN,
-            USER_PASSWORD: 'e2e-user',
-            SESSION_SECRET: 'e2e-session-secret',
+            SSO_PROXY_KEY: proxyKey,
+            SSO_ADMIN_IDS: 'e2e-admin',
+            SSO_OPERATOR_IDS: 'e2e-operator',
+            SSO_VIEWER_IDS: 'e2e-viewer',
             SUPERVISOR_TOKEN: 'e2e-supervisor',
             SANDBOX_ROOT: sandbox,
             MC_SERVER_DIR: '',
@@ -142,20 +143,12 @@ const main = async () => {
                 await sleep(500);
             }
         }
-        // The user role must not reach admin APIs.
-        const userLogin = await fetch(`${BASE}/api/login`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ password: 'e2e-user' }),
-        });
-        const userCookie = userLogin.headers.get('set-cookie').split(';')[0];
-        for (const url of ['/api/worlds', '/api/backups', '/api/addons/providers', '/api/server/install/options', '/api/properties', '/api/jobs']) {
-            const res = await fetch(BASE + url, { headers: { cookie: userCookie } });
-            if (res.status !== 403) throw new Error(`user role got ${res.status} for ${url}`);
+        for (const role of ['viewer', 'operator']) {
+            for (const url of ['/api/worlds', '/api/backups', '/api/addons/providers', '/api/server/install/options', '/api/properties', '/api/jobs']) {
+                const res = await fetch(BASE + url, { headers: identity(role) });
+                if (res.status !== 403) throw new Error(role + ' got ' + res.status + ' for ' + url);
+            }
         }
-        log('User role is refused by admin APIs (403)');
-
-        await api('POST', '/api/login', { password: ADMIN });
 
         const versions = await api('GET', `/api/server/install/versions?loader=${loader}`);
         const mc = minecraftVersion || versions[0].id;
