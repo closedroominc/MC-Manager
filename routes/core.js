@@ -1,29 +1,12 @@
 const express = require('express');
 const fs = require('fs');
 const { readPropertiesFile, updatePropertiesFile } = require('../lib/properties');
+const { sameSecret } = require('../lib/auth');
 const { OperationError } = require('../lib/operations');
 
 module.exports = ({ config, auth, state, minecraft, operations, players, shutdownManager }) => {
     const router = express.Router();
     const { requireAuth, requireAdmin } = auth;
-
-    router.post('/login', (req, res) => {
-        if (!config.AUTH_CONFIGURED) {
-            return res.status(503).json({ error: 'Manager authentication is not configured' });
-        }
-
-        const { password } = req.body || {};
-        const role = password === config.ADMIN_PASSWORD ? 'admin' : password === config.USER_PASSWORD ? 'user' : null;
-        if (!role) return res.status(401).json({ error: 'Invalid password' });
-
-        res.cookie('auth_token', auth.sign(role), { httpOnly: true, sameSite: 'strict' });
-        res.json({ success: true, role });
-    });
-
-    router.post('/logout', (req, res) => {
-        res.clearCookie('auth_token');
-        res.json({ success: true });
-    });
 
     router.get('/check-auth', requireAuth, (req, res) => {
         res.json({ authenticated: true, role: req.user.role });
@@ -77,7 +60,7 @@ module.exports = ({ config, auth, state, minecraft, operations, players, shutdow
         };
     };
 
-    router.get('/status', (req, res) => {
+    router.get('/status', requireAuth, (req, res) => {
         res.json({
             ...statusPayload(),
             service: 'RUNNING',
@@ -98,7 +81,7 @@ module.exports = ({ config, auth, state, minecraft, operations, players, shutdow
         });
     });
 
-    router.get('/ping', (req, res) => res.send('pong'));
+    router.get('/ping', requireAuth, (req, res) => res.send('pong'));
 
     router.get('/jobs', requireAuth, requireAdmin, (req, res) => {
         res.json(operations.listJobs({ active: req.query.active === '1' }));
@@ -111,7 +94,7 @@ module.exports = ({ config, auth, state, minecraft, operations, players, shutdow
     });
 
     router.post('/supervisor/shutdown', (req, res) => {
-        if (!config.SUPERVISOR_CONFIGURED || req.get('x-manager-supervisor-token') !== config.SUPERVISOR_TOKEN) {
+        if (!config.SUPERVISOR_CONFIGURED || !sameSecret(req.get('x-manager-supervisor-token'), config.SUPERVISOR_TOKEN)) {
             return res.status(401).json({ error: 'Supervisor authentication failed' });
         }
         res.json({ accepted: true });

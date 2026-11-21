@@ -3,12 +3,11 @@ const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const { Server } = require('socket.io');
-const cookieParser = require('cookie-parser');
 
 const config = require('./lib/config');
 require('./lib/logfile').attachLogFile(process.env.MANAGER_LOG_FILE);
 const { JsonStore } = require('./lib/store');
-const { createAuth, parseCookieHeader } = require('./lib/auth');
+const { createAuth, canOperate } = require('./lib/auth');
 const { Operations } = require('./lib/operations');
 const { MinecraftServer } = require('./lib/minecraft');
 const { Metrics } = require('./lib/metrics');
@@ -77,7 +76,7 @@ const logEvents = new LogEvents({ minecraft, requestsFile: path.join(config.DATA
 const roster = new Roster({ config, minecraft, players, logEvents });
 const systemInfo = new SystemInfo({ config, state, minecraft });
 const mapControl = new MapControl({ config, state, minecraft, addons });
-const auth = createAuth(config.SESSION_SECRET);
+const auth = createAuth(config.SSO_PROXY_KEY, config.SSO_ROLES, config.SSO_BOOTSTRAP_ADMIN_EMAIL);
 
 try {
     worlds.reconcile();
@@ -85,16 +84,17 @@ try {
     console.error('World reconciliation failed:', error.message);
 }
 
-if (!config.AUTH_CONFIGURED) {
-    console.warn('Authentication is not configured. Copy .env.example to .env and set the required secrets.');
-}
+if (!config.SSO_PROXY_KEY) console.warn('Autentico proxy key is missing. Dashboard access is denied.');
 
 process.on('uncaughtException', (err) => console.error('UNCAUGHT EXCEPTION:', err));
 process.on('unhandledRejection', (reason) => console.error('UNHANDLED REJECTION:', reason));
 
 const app = express();
 const server = http.createServer(app);
+const sameOrigin = (req) => !req.headers.origin || req.headers.origin === config.PUBLIC_ORIGIN;
 const io = new Server(server, {
+    allowRequest: (req, done) => done(null, sameOrigin(req) && Boolean(auth.identify(req.headers))),
+    perMessageDeflate: false,
     cors: { origin: config.CORS_ORIGIN, methods: ['GET', 'POST'], credentials: true },
 });
 
@@ -106,12 +106,25 @@ const MAP_ROOM = 'map_room';
 const roomSize = (room) => io.of('/').adapter.rooms.get(room)?.size || 0;
 
 app.use(express.json({ limit: '1mb' }));
-app.use(cookieParser());
+app.use('/api', (req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !sameOrigin(req)) {
+        return res.status(403).json({ error: 'Cross-origin request denied' });
+    }
+    next();
+});
+// A signed-in Autentico user whose role is not known yet is sent to look it up (silent single sign-on).
+app.use((req, res, next) => {
+    if (req.method !== 'GET' || /^\/(auth|api|map|socket\.io)(\/|$)/.test(req.path)) return next();
+    if (!(req.headers.accept || '').includes('text/html')) return next();
+    if (auth.identify(req.headers) || !auth.gateUser(req.headers)) return next();
+    return res.redirect('/auth/login');
+});
 app.use(express.static(path.join(__dirname, 'client/dist')));
 
 // BlueMap files (admin and user), served from the active world's map folder.
 app.use('/map', (req, res) => {
-    if (!auth.verify(req.cookies.auth_token)) return res.status(401).send('Unauthorized');
+    if (!auth.identify(req.headers)) return res.status(401).send('Unauthorized');
     return mapControl.serve(req, res);
 });
 
@@ -129,6 +142,7 @@ const shutdownManager = async () => {
 };
 
 const routeDeps = { config, auth, state, minecraft, operations, players, worlds, installer, backups, addons, discord, setups, switcher, clientSync, roster, systemInfo, mapControl, io, shutdownManager };
+app.use('/auth', require('./routes/oidc')(routeDeps));
 app.use('/api', require('./routes/core')(routeDeps));
 app.use('/api/server', require('./routes/server-install')(routeDeps));
 app.use('/api/worlds', require('./routes/worlds')(routeDeps));
@@ -226,8 +240,7 @@ mapControl.onStatus = (view) => io.to(MAP_ROOM).emit('map_status', view);
 // One shared stats sampler; only samples while someone has the System page open.
 // Tick timing (RCON `tick query`) is sampled every other round.
 let statsRound = 0;
-setInterval(async () => {
-    if (!roomSize(STATS_ROOM)) return;
+const sampleStats = async () => {
     try {
         const sample = await metrics.sample();
         statsRound += 1;
@@ -238,14 +251,25 @@ setInterval(async () => {
     } catch (error) {
         console.error('Stats error:', error.message);
     }
-}, 2000).unref();
+};
+let statsTimer;
+const updateStatsTimer = (room) => {
+    if (room !== STATS_ROOM) return;
+    if (roomSize(STATS_ROOM) && !statsTimer) statsTimer = setInterval(sampleStats, 2000).unref();
+    if (!roomSize(STATS_ROOM) && statsTimer) {
+        clearInterval(statsTimer);
+        statsTimer = undefined;
+    }
+};
+io.of('/').adapter.on('join-room', updateStatsTimer);
+io.of('/').adapter.on('leave-room', updateStatsTimer);
 
 const reportError = (socket, error) => {
     socket.emit('start_error', error.code === 'BUSY' ? `Busy: ${error.current.kind} is in progress.` : error.message);
 };
 
 io.use((socket, next) => {
-    const user = auth.verify(parseCookieHeader(socket.handshake.headers.cookie).auth_token);
+    const user = auth.identify(socket.handshake.headers);
     if (!user) return next(new Error('Authentication error'));
     socket.user = user;
     next();
@@ -257,16 +281,22 @@ io.on('connection', (socket) => {
     socket.emit('status', minecraft.refreshStatus());
     socket.emit('operation', operations.snapshot());
 
+    // End a long-lived socket so Caddy can recheck the portal session.
+    const recheck = setTimeout(() => socket.conn.close(), 15 * 60 * 1000).unref();
+    socket.once('disconnect', () => clearTimeout(recheck));
+
     if (isAdmin) {
         socket.join(ADMIN_ROOM);
         socket.emit('player_list', players.snapshot());
         socket.emit('jobs', operations.listJobs({ active: true }));
     }
 
-    // Start/stop/restart are allowed for every role.
-    socket.on('start', () => minecraft.start().catch((error) => reportError(socket, error)));
-    socket.on('stop', () => minecraft.stop().catch((error) => reportError(socket, error)));
-    socket.on('restart', () => minecraft.restart().catch((error) => reportError(socket, error)));
+    for (const action of ['start', 'stop', 'restart']) {
+        socket.on(action, () => {
+            if (!canOperate(socket.user)) return socket.emit('start_error', 'Operator access required');
+            minecraft[action]().catch((error) => reportError(socket, error));
+        });
+    }
 
     socket.on('stats_subscribe', () => {
         if (isAdmin) socket.join(STATS_ROOM);

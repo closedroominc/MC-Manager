@@ -43,7 +43,7 @@ This script will install Node.js 20, Java 21, PM2, and Nginx.
 
 ## Step 3: Configure Manager
 1.  Edit the `.env` file: `nano .env`
-2.  Update `ADMIN_PASSWORD` and `USER_PASSWORD`.
+2.  Set `SSO_PROXY_KEY` and `PUBLIC_ORIGIN` (sign-in is through Autentico; see "Autentico access" in the README).
 3.  Set `RCON_HOST=localhost` and `RCON_PORT=25575` (ensure matches `server.properties`).
 4.  Save and exit (`Ctrl+O`, `Enter`, `Ctrl+X`).
 
