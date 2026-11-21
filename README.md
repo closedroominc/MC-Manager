@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/closedroominc/.github/main/profile/assets/mc-manager-icon.png" width="96" alt="Closed Room Minecraft project icon">
+
 # MC-Manager
 
 This project is being hosted on the Windows machine under `E:\MC PC - Sandbox`.
