@@ -28,7 +28,7 @@ const ProtectedRoute = ({ children }) => {
 
 const AdminRoute = ({ children }) => {
   const { user } = useAuth();
-  if (user?.role !== 'admin') return <Navigate to="/controls" replace />;
+  if (user?.role !== 'admin') return <Navigate to={user?.role === 'operator' ? '/controls' : '/map'} replace />;
   return children;
 };
 
